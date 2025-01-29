@@ -1,3 +1,5 @@
+use coremidi::{Client, PacketList, Source, Sources};
+
 use std::io::{self, BufRead};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -18,11 +20,29 @@ use ble_peripheral_rust::{
 
 #[tokio::main]
 async fn main() {
-    std::env::set_var("RUST_LOG", "info");
-    if let Err(err) = pretty_env_logger::try_init() {
-        eprintln!("WARNING: failed to initialize logging framework: {}", err);
+    if Sources::count() == 0 {
+        eprintln!("No MIDI sources available");
+        std::process::exit(-1);
     }
+
+    let source = Source::from_index(0).unwrap();
+    println!("Using MIDI source: {}", source.display_name().unwrap());
+
+    let client = Client::new("Example Client").unwrap();
+
+    let callback = |packet_list: &PacketList| {
+        //PacketList(ptr=16fa0a608, packets=[Packet(ptr=16fa0a60c, ts=0000020ecf214ce8, data=[80, 3e, 7f])])
+        println!("{:?}", packet_list);
+    };
+
+    let port = client.input_port("Example Port", callback).unwrap();
+
+    port.connect_source(&source).unwrap();
+
     start_app().await;
+
+    println!("disconnect midi");
+    port.disconnect_source(&source).unwrap();
 }
 
 async fn start_app() {
@@ -72,19 +92,19 @@ async fn start_app() {
     while !peripheral.is_powered().await.unwrap() {}
 
     if let Err(err) = peripheral.add_service(&service).await {
-        log::error!("Error adding service: {}", err);
+        eprintln!("Error adding service: {}", err);
         return;
     }
-    log::info!("Service Added");
+    println!("Service Added");
 
     if let Err(err) = peripheral
         .start_advertising("RustBLE", &[service.uuid])
         .await
     {
-        log::error!("Error starting advertising: {}", err);
+        eprintln!("Error starting advertising: {}", err);
         return;
     }
-    log::info!("Advertising Started");
+    println!("Advertising Started");
 
     // Write in console to send to characteristic update to subscribed clients
     let stdin = io::stdin();
@@ -98,31 +118,33 @@ async fn start_app() {
                     .unwrap();
             }
             Err(err) => {
-                log::error!("Error reading from console: {}", err);
+                eprintln!("Error reading from console: {}", err);
                 break;
             }
         }
     }
+
+    println!("start_app done");
 }
 
 /// Listen to all updates and respond if require
 pub fn handle_updates(update: PeripheralEvent) {
     match update {
         PeripheralEvent::StateUpdate { is_powered } => {
-            log::info!("PowerOn: {is_powered:?}")
+            println!("PowerOn: {is_powered:?}")
         }
         PeripheralEvent::CharacteristicSubscriptionUpdate {
             request,
             subscribed,
         } => {
-            log::info!("CharacteristicSubscriptionUpdate: Subscribed {subscribed} {request:?}")
+            println!("CharacteristicSubscriptionUpdate: Subscribed {subscribed} {request:?}")
         }
         PeripheralEvent::ReadRequest {
             request,
             offset,
             responder,
         } => {
-            log::info!("ReadRequest: {request:?} Offset: {offset}");
+            println!("ReadRequest: {request:?} Offset: {offset}");
             responder
                 .send(ReadRequestResponse {
                     value: String::from("hi").into(),
@@ -136,7 +158,7 @@ pub fn handle_updates(update: PeripheralEvent) {
             value,
             responder,
         } => {
-            log::info!("WriteRequest: {request:?} Value: {value:?} Offset: {offset}");
+            println!("WriteRequest: {request:?} Value: {value:?} Offset: {offset}");
             responder
                 .send(WriteRequestResponse {
                     response: RequestResponse::Success,

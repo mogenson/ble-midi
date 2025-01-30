@@ -1,7 +1,7 @@
 use coremidi::{Client, PacketList, Source, Sources};
 
-use std::io::{self, BufRead};
-use tokio::sync::mpsc;
+use tokio::signal;
+use tokio::sync::mpsc::{self, Receiver};
 use uuid::Uuid;
 
 use ble_peripheral_rust::{
@@ -25,27 +25,42 @@ async fn main() {
         std::process::exit(-1);
     }
 
+    let (tx, rx) = mpsc::channel(1);
+
     let source = Source::from_index(0).unwrap();
     println!("Using MIDI source: {}", source.display_name().unwrap());
 
     let client = Client::new("Example Client").unwrap();
 
-    let callback = |packet_list: &PacketList| {
+    let callback = move |packet_list: &PacketList| {
         //PacketList(ptr=16fa0a608, packets=[Packet(ptr=16fa0a60c, ts=0000020ecf214ce8, data=[80, 3e, 7f])])
-        println!("{:?}", packet_list);
+        for packet in packet_list.iter() {
+            println!("Sending {:?}", packet);
+            tx.blocking_send(packet.data().to_vec()).unwrap();
+        }
     };
 
     let port = client.input_port("Example Port", callback).unwrap();
 
     port.connect_source(&source).unwrap();
 
-    start_app().await;
+    let ctrl_c = async {
+        signal::ctrl_c().await.unwrap();
+    };
 
-    println!("disconnect midi");
+    tokio::select! {
+        _ = ctrl_c => {
+            println!("Ctrl-C received, exiting!");
+        }
+        _ = ble_task(rx) => {
+            println!("BLE task completed.");
+        }
+    }
+
     port.disconnect_source(&source).unwrap();
 }
 
-async fn start_app() {
+async fn ble_task(mut rx: Receiver<Vec<u8>>) {
     let char_uuid = Uuid::from_short(0x2A3D_u16);
 
     // Define Service With Characteristics
@@ -106,25 +121,14 @@ async fn start_app() {
     }
     println!("Advertising Started");
 
-    // Write in console to send to characteristic update to subscribed clients
-    let stdin = io::stdin();
-    for line in stdin.lock().lines() {
-        match line {
-            Ok(input) => {
-                println!("Writing: {input} to {char_uuid}");
-                peripheral
-                    .update_characteristic(char_uuid, input.into())
-                    .await
-                    .unwrap();
-            }
-            Err(err) => {
-                eprintln!("Error reading from console: {}", err);
-                break;
-            }
-        }
+    loop {
+        let data = rx.recv().await.unwrap();
+        println!("Received {:?}", data);
+        peripheral
+            .update_characteristic(char_uuid, data)
+            .await
+            .unwrap();
     }
-
-    println!("start_app done");
 }
 
 /// Listen to all updates and respond if require

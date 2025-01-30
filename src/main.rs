@@ -61,36 +61,30 @@ async fn main() {
 }
 
 async fn ble_task(mut rx: Receiver<Vec<u8>>) {
-    let char_uuid = Uuid::from_short(0x2A3D_u16);
+    let char_uuid = Uuid::parse_str("7772E5DB-3868-4112-A1A9-F2669D106BF3").unwrap();
 
-    // Define Service With Characteristics
     let service = Service {
-        uuid: Uuid::from_short(0x1234_u16),
+        uuid: Uuid::parse_str("03B80E5A-EDE8-4B33-A751-6CE34EC4C700").unwrap(),
         primary: true,
-        characteristics: vec![
-            Characteristic {
-                uuid: char_uuid,
-                properties: vec![
-                    CharacteristicProperty::Read,
-                    CharacteristicProperty::Write,
-                    CharacteristicProperty::Notify,
-                ],
-                permissions: vec![
-                    AttributePermission::Readable,
-                    AttributePermission::Writeable,
-                ],
-                value: None,
-                descriptors: vec![Descriptor {
-                    uuid: Uuid::from_short(0x2A13_u16),
-                    value: Some(vec![0, 1]),
-                    ..Default::default()
-                }],
-            },
-            Characteristic {
-                uuid: Uuid::from_string("1209"),
+        characteristics: vec![Characteristic {
+            uuid: char_uuid,
+            properties: vec![
+                CharacteristicProperty::Read,
+                CharacteristicProperty::Write,
+                CharacteristicProperty::WriteWithoutResponse,
+                CharacteristicProperty::Notify,
+            ],
+            permissions: vec![
+                AttributePermission::Readable,
+                AttributePermission::Writeable,
+            ],
+            value: None,
+            descriptors: vec![Descriptor {
+                uuid: Uuid::from_short(0x2A13_u16),
+                value: Some(vec![0, 1]),
                 ..Default::default()
-            },
-        ],
+            }],
+        }],
     };
 
     let (sender_tx, mut receiver_rx) = mpsc::channel::<PeripheralEvent>(256);
@@ -112,8 +106,9 @@ async fn ble_task(mut rx: Receiver<Vec<u8>>) {
     }
     println!("Service Added");
 
+    let hostname = std::env::var("HOSTNAME").unwrap();
     if let Err(err) = peripheral
-        .start_advertising("RustBLE", &[service.uuid])
+        .start_advertising(hostname.as_str(), &[service.uuid])
         .await
     {
         eprintln!("Error starting advertising: {}", err);
@@ -124,8 +119,14 @@ async fn ble_task(mut rx: Receiver<Vec<u8>>) {
     loop {
         let data = rx.recv().await.unwrap();
         println!("Received {:?}", data);
+
+        // MSb high for header byte and timestamp byte
+        // Timestamp value is always zero
+        let mut midi_data = vec![0x80, 0x80];
+        midi_data.extend(data);
+
         peripheral
-            .update_characteristic(char_uuid, data)
+            .update_characteristic(char_uuid, midi_data)
             .await
             .unwrap();
     }

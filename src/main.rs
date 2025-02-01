@@ -70,7 +70,6 @@ async fn ble_task(mut rx: Receiver<Vec<u8>>) {
             uuid: char_uuid,
             properties: vec![
                 CharacteristicProperty::Read,
-                CharacteristicProperty::Write,
                 CharacteristicProperty::WriteWithoutResponse,
                 CharacteristicProperty::Notify,
             ],
@@ -106,9 +105,8 @@ async fn ble_task(mut rx: Receiver<Vec<u8>>) {
     }
     println!("Service Added");
 
-    let hostname = std::env::var("HOSTNAME").unwrap();
     if let Err(err) = peripheral
-        .start_advertising(hostname.as_str(), &[service.uuid])
+        .start_advertising("BLEMIDI", &[service.uuid])
         .await
     {
         eprintln!("Error starting advertising: {}", err);

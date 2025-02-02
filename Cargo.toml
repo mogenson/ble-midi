@@ -4,11 +4,8 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ble-peripheral-rust = "0.2.0"
+btleplug = "0.11.7"
 coremidi = "0.8.0"
 log = "0.4.25"
 uuid = "1.12.1"
-
-[dependencies.tokio]
-version = "1.43.0"
-features = [ "signal" ]
+tokio = { version = "1.43.0", features = ["full"] }

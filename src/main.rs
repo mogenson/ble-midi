@@ -1,22 +1,15 @@
-use coremidi::{Client, PacketList, Source, Sources};
-
-use tokio::signal;
-use tokio::sync::mpsc::{self, Receiver};
-use uuid::Uuid;
-
-use ble_peripheral_rust::{
-    gatt::{
-        characteristic::Characteristic,
-        descriptor::Descriptor,
-        peripheral_event::{
-            PeripheralEvent, ReadRequestResponse, RequestResponse, WriteRequestResponse,
-        },
-        properties::{AttributePermission, CharacteristicProperty},
-        service::Service,
-    },
-    uuid::ShortUuid,
-    Peripheral, PeripheralImpl,
+use btleplug::{
+    api::{Central, Manager as _, Peripheral as _, ScanFilter, WriteType},
+    platform::{Adapter, Manager, Peripheral},
 };
+use coremidi::{Client, PacketList, Source, Sources};
+use std::{error::Error, time::Duration};
+use tokio::{
+    signal,
+    sync::mpsc::{self, Receiver},
+    time,
+};
+use uuid::Uuid;
 
 #[tokio::main]
 async fn main() {
@@ -52,67 +45,35 @@ async fn main() {
         _ = ctrl_c => {
             println!("Ctrl-C received, exiting!");
         }
-        _ = ble_task(rx) => {
+        result = ble_task(rx) => {
+            if let Err(error) = result {
+                eprintln!("ble task error: {}", error);
+            }
             println!("BLE task completed.");
         }
     }
 
+    // todo disconnect and forget
     port.disconnect_source(&source).unwrap();
 }
 
-async fn ble_task(mut rx: Receiver<Vec<u8>>) {
-    let char_uuid = Uuid::parse_str("7772E5DB-3868-4112-A1A9-F2669D106BF3").unwrap();
-
-    let service = Service {
-        uuid: Uuid::parse_str("03B80E5A-EDE8-4B33-A751-6CE34EC4C700").unwrap(),
-        primary: true,
-        characteristics: vec![Characteristic {
-            uuid: char_uuid,
-            properties: vec![
-                CharacteristicProperty::Read,
-                CharacteristicProperty::WriteWithoutResponse,
-                CharacteristicProperty::Notify,
-            ],
-            permissions: vec![
-                AttributePermission::Readable,
-                AttributePermission::Writeable,
-            ],
-            value: None,
-            descriptors: vec![Descriptor {
-                uuid: Uuid::from_short(0x2A13_u16),
-                value: Some(vec![0, 1]),
-                ..Default::default()
-            }],
-        }],
-    };
-
-    let (sender_tx, mut receiver_rx) = mpsc::channel::<PeripheralEvent>(256);
-
-    let mut peripheral = Peripheral::new(sender_tx).await.unwrap();
-
-    // Handle Updates
-    tokio::spawn(async move {
-        while let Some(event) = receiver_rx.recv().await {
-            handle_updates(event);
-        }
-    });
-
-    while !peripheral.is_powered().await.unwrap() {}
-
-    if let Err(err) = peripheral.add_service(&service).await {
-        eprintln!("Error adding service: {}", err);
-        return;
-    }
-    println!("Service Added");
-
-    if let Err(err) = peripheral
-        .start_advertising("BLEMIDI", &[service.uuid])
+async fn ble_task(mut rx: Receiver<Vec<u8>>) -> Result<(), Box<dyn Error>> {
+    let midi_uuid = Uuid::parse_str("7772E5DB-3868-4112-A1A9-F2669D106BF3")?;
+    let manager = Manager::new().await.unwrap();
+    let adapters = manager.adapters().await?;
+    let central = adapters.into_iter().nth(0).ok_or("can't get adapter")?;
+    central.start_scan(ScanFilter::default()).await?;
+    time::sleep(Duration::from_secs(4)).await;
+    let peripheral = find_by_name(&central, "CH-8")
         .await
-    {
-        eprintln!("Error starting advertising: {}", err);
-        return;
-    }
-    println!("Advertising Started");
+        .ok_or("can't find peripehral")?;
+    peripheral.connect().await?;
+    peripheral.discover_services().await?;
+    let chars = peripheral.characteristics();
+    let midi_char = chars
+        .iter()
+        .find(|c| c.uuid == midi_uuid)
+        .ok_or("can't find midi characteristic")?;
 
     loop {
         let data = rx.recv().await.unwrap();
@@ -124,49 +85,23 @@ async fn ble_task(mut rx: Receiver<Vec<u8>>) {
         midi_data.extend(data);
 
         peripheral
-            .update_characteristic(char_uuid, midi_data)
-            .await
-            .unwrap();
+            .write(&midi_char, &midi_data, WriteType::WithoutResponse)
+            .await?;
     }
 }
 
-/// Listen to all updates and respond if require
-pub fn handle_updates(update: PeripheralEvent) {
-    match update {
-        PeripheralEvent::StateUpdate { is_powered } => {
-            println!("PowerOn: {is_powered:?}")
-        }
-        PeripheralEvent::CharacteristicSubscriptionUpdate {
-            request,
-            subscribed,
-        } => {
-            println!("CharacteristicSubscriptionUpdate: Subscribed {subscribed} {request:?}")
-        }
-        PeripheralEvent::ReadRequest {
-            request,
-            offset,
-            responder,
-        } => {
-            println!("ReadRequest: {request:?} Offset: {offset}");
-            responder
-                .send(ReadRequestResponse {
-                    value: String::from("hi").into(),
-                    response: RequestResponse::Success,
-                })
-                .unwrap();
-        }
-        PeripheralEvent::WriteRequest {
-            request,
-            offset,
-            value,
-            responder,
-        } => {
-            println!("WriteRequest: {request:?} Value: {value:?} Offset: {offset}");
-            responder
-                .send(WriteRequestResponse {
-                    response: RequestResponse::Success,
-                })
-                .unwrap();
+async fn find_by_name(central: &Adapter, name: &str) -> Option<Peripheral> {
+    for p in central.peripherals().await.unwrap() {
+        if p.properties()
+            .await
+            .unwrap()
+            .unwrap()
+            .local_name
+            .iter()
+            .any(|string| string.contains(name))
+        {
+            return Some(p);
         }
     }
+    None
 }
